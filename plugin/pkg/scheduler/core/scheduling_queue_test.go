@@ -107,7 +107,7 @@ func TestPriorityQueue_Update(t *testing.T) {
 		t.Errorf("Expected %v to be added to activeQ.", highPriorityPod.Name)
 	}
 	q.Update(&highPriorityPod)
-	if q.activeQ.data.Len() != 1 {
+	if q.activeQ.Len() != 1 {
 		t.Error("Expected only one item in activeQ.")
 	}
 	// Updating an unschedulable pod which is not in any of the two queues, should
@@ -149,7 +149,7 @@ func TestPriorityQueue_MoveAllToActiveQueue(t *testing.T) {
 	q.unschedulableQ.Add(&unschedulablePod)
 	q.unschedulableQ.Add(&highPriorityPod)
 	q.MoveAllToActiveQueue()
-	if q.activeQ.data.Len() != 3 {
+	if q.activeQ.Len() != 3 {
 		t.Error("Expected all items to be in activeQ.")
 	}
 }

@@ -28,6 +28,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "backoff_utils.go",
+        "heap.go",
         "testutil.go",
         "utils.go",
     ],
@@ -44,6 +45,7 @@ go_library(
         "//vendor/k8s.io/apimachinery/pkg/runtime/schema:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/types:go_default_library",
         "//vendor/k8s.io/apiserver/pkg/util/feature:go_default_library",
+        "//vendor/k8s.io/client-go/tools/cache:go_default_library",
     ],
 )
 
