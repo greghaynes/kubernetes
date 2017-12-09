@@ -20,11 +20,20 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/scheduler/util"
 )
+
+type fakeClock struct {
+	t time.Time
+}
+
+func (f *fakeClock) Now() time.Time {
+	return f.t
+}
 
 var mediumPriority = (lowPriority + highPriority) / 2
 var highPriorityPod, highPriNominatedPod, medPriorityPod, unschedulablePod = v1.Pod{
@@ -91,7 +100,7 @@ var highPriorityPod, highPriNominatedPod, medPriorityPod, unschedulablePod = v1.
 	}
 
 func TestPriorityQueue_Add(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.Add(&medPriorityPod)
 	q.Add(&unschedulablePod)
 	q.Add(&highPriorityPod)
@@ -116,7 +125,7 @@ func TestPriorityQueue_Add(t *testing.T) {
 }
 
 func TestPriorityQueue_AddIfNotPresent(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.unschedulableQ.addOrUpdate(&highPriNominatedPod)
 	q.AddIfNotPresent(&highPriNominatedPod) // Must not add anything.
 	q.AddIfNotPresent(&medPriorityPod)
@@ -142,7 +151,7 @@ func TestPriorityQueue_AddIfNotPresent(t *testing.T) {
 }
 
 func TestPriorityQueue_AddUnschedulableIfNotPresent(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.Add(&highPriNominatedPod)
 	q.AddUnschedulableIfNotPresent(&highPriNominatedPod) // Must not add anything.
 	q.AddUnschedulableIfNotPresent(&medPriorityPod)      // This should go to activeQ.
@@ -168,7 +177,7 @@ func TestPriorityQueue_AddUnschedulableIfNotPresent(t *testing.T) {
 }
 
 func TestPriorityQueue_Pop(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
@@ -185,7 +194,7 @@ func TestPriorityQueue_Pop(t *testing.T) {
 }
 
 func TestPriorityQueue_Update(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.Update(nil, &highPriorityPod)
 	if _, exists, _ := q.activeQ.Get(&highPriorityPod); !exists {
 		t.Errorf("Expected %v to be added to activeQ.", highPriorityPod.Name)
@@ -221,7 +230,7 @@ func TestPriorityQueue_Update(t *testing.T) {
 }
 
 func TestPriorityQueue_Delete(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.Update(&highPriorityPod, &highPriNominatedPod)
 	q.Add(&unschedulablePod)
 	q.Delete(&highPriNominatedPod)
@@ -241,11 +250,19 @@ func TestPriorityQueue_Delete(t *testing.T) {
 }
 
 func TestPriorityQueue_MoveAllToActiveQueue(t *testing.T) {
-	q := NewPriorityQueue()
+	clock := fakeClock{}
+	q := NewPriorityQueueWithClock(nil, &clock)
 	q.Add(&medPriorityPod)
 	q.unschedulableQ.addOrUpdate(&unschedulablePod)
 	q.unschedulableQ.addOrUpdate(&highPriorityPod)
 	q.MoveAllToActiveQueue()
+
+	if q.activeQ.Len() != 1 {
+		t.Error("Expected all unschedulable items to be in backoff.")
+	}
+	clock.t = clock.t.Add(2 * time.Second)
+	q.moveNextBackoffToActive()
+	q.moveNextBackoffToActive()
 	if q.activeQ.Len() != 3 {
 		t.Error("Expected all items to be in activeQ.")
 	}
@@ -287,7 +304,8 @@ func TestPriorityQueue_AssignedPodAdded(t *testing.T) {
 		Spec: v1.PodSpec{NodeName: "machine1"},
 	}
 
-	q := NewPriorityQueue()
+	clock := fakeClock{}
+	q := NewPriorityQueueWithClock(nil, &clock)
 	q.Add(&medPriorityPod)
 	// Add a couple of pods to the unschedulableQ.
 	q.unschedulableQ.addOrUpdate(&unschedulablePod)
@@ -295,6 +313,8 @@ func TestPriorityQueue_AssignedPodAdded(t *testing.T) {
 	// Simulate addition of an assigned pod. The pod has matching labels for
 	// affinityPod. So, affinityPod should go to activeQ.
 	q.AssignedPodAdded(&labelPod)
+	clock.t = clock.t.Add(2 * time.Second)
+	q.moveNextBackoffToActive()
 	if q.unschedulableQ.get(affinityPod) != nil {
 		t.Error("affinityPod is still in the unschedulableQ.")
 	}
@@ -308,7 +328,7 @@ func TestPriorityQueue_AssignedPodAdded(t *testing.T) {
 }
 
 func TestPriorityQueue_WaitingPodsForNode(t *testing.T) {
-	q := NewPriorityQueue()
+	q := NewPriorityQueue(nil)
 	q.Add(&medPriorityPod)
 	q.Add(&unschedulablePod)
 	q.Add(&highPriorityPod)

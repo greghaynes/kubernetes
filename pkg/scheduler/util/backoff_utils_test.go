@@ -69,7 +69,6 @@ func TestBackoff(t *testing.T) {
 			t.Errorf("expected: %s, got %s for %s", test.expectedDuration.String(), duration.String(), test.podID)
 		}
 		clock.t = clock.t.Add(test.advanceClock)
-		backoff.Gc()
 	}
 	fooID := ktypes.NamespacedName{Namespace: "default", Name: "foo"}
 	be := backoff.getEntry(fooID)

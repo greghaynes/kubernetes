@@ -169,7 +169,7 @@ func NewConfigFactory(
 	c := &configFactory{
 		client:                         client,
 		podLister:                      schedulerCache,
-		podQueue:                       core.NewSchedulingQueue(),
+		podQueue:                       core.NewSchedulingQueue(stopEverything),
 		pVLister:                       pvInformer.Lister(),
 		pVCLister:                      pvcInformer.Lister(),
 		serviceLister:                  serviceInformer.Lister(),
@@ -323,6 +323,9 @@ func NewConfigFactory(
 			}
 		}
 	}()
+
+	// Start the scheduling queue
+	c.podQueue.Run()
 
 	return c
 }
@@ -1324,7 +1327,6 @@ func (c *configFactory) MakeDefaultErrorFunc(backoff *util.PodBackoff, podQueue 
 			}
 		}
 
-		backoff.Gc()
 		// Retry asynchronously.
 		// Note that this is extremely rudimentary and we need a more real error handling path.
 		go func() {
@@ -1339,12 +1341,7 @@ func (c *configFactory) MakeDefaultErrorFunc(backoff *util.PodBackoff, podQueue 
 			// pod in the unschedulable queue. This ensures that if the pod is nominated
 			// to run on a node, scheduler takes the pod into account when running
 			// predicates for the node.
-			if !util.PodPriorityEnabled() {
-				if !backoff.TryBackoffAndWait(podID) {
-					glog.Warningf("Request for pod %v already in flight, abandoning", podID)
-					return
-				}
-			}
+
 			// Get the pod again; it may have changed/been scheduled already.
 			getBackoff := initialGetBackoff
 			for {

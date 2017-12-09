@@ -25,6 +25,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "backoff_utils.go",
+        "clock.go",
         "heap.go",
         "utils.go",
     ],
