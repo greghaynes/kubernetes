@@ -38,9 +38,10 @@ func (realClock) Now() time.Time {
 }
 
 // backoffEntry is single threaded.  in particular, it only allows a single action to be waiting on backoff at a time.
-// It is expected that all users will only use the public TryWait(...) method
-// It is also not safe to copy this object.
+// It is not safe to copy this object.
 type backoffEntry struct {
+	initialized bool
+	podName     ktypes.NamespacedName
 	backoff     time.Duration
 	lastUpdate  time.Time
 	reqInFlight int32
@@ -59,33 +60,31 @@ func (b *backoffEntry) unlock() {
 	}
 }
 
-// TryWait tries to acquire the backoff lock, maxDuration is the maximum allowed period to wait for.
-func (b *backoffEntry) TryWait(maxDuration time.Duration) bool {
-	if !b.tryLock() {
-		return false
-	}
-	defer b.unlock()
-	b.wait(maxDuration)
-	return true
+func (b *backoffEntry) backoffTime() time.Time {
+	return b.lastUpdate.Add(b.backoff)
 }
 
-func (entry *backoffEntry) getBackoff(maxDuration time.Duration) time.Duration {
-	duration := entry.backoff
-	newDuration := time.Duration(duration) * 2
+func (entry *backoffEntry) doBackoff(maxDuration time.Duration) time.Duration {
+	if !entry.initialized {
+		entry.initialized = true
+		return entry.backoff
+	}
+	newDuration := entry.backoff * 2
 	if newDuration > maxDuration {
 		newDuration = maxDuration
 	}
 	entry.backoff = newDuration
-	glog.V(4).Infof("Backing off %s", duration.String())
-	return duration
+	glog.V(4).Infof("Backing off %s", newDuration.String())
+	return newDuration
 }
 
-func (entry *backoffEntry) wait(maxDuration time.Duration) {
-	time.Sleep(entry.getBackoff(maxDuration))
+func (entry *backoffEntry) backoffAndWait(maxDuration time.Duration) {
+	time.Sleep(entry.doBackoff(maxDuration))
 }
 
 type PodBackoff struct {
-	perPodBackoff   map[ktypes.NamespacedName]*backoffEntry
+	expiryQ         *Heap
+	backoffQ        *Heap
 	lock            sync.Mutex
 	clock           clock
 	defaultDuration time.Duration
@@ -106,32 +105,95 @@ func CreatePodBackoff(defaultDuration, maxDuration time.Duration) *PodBackoff {
 
 func CreatePodBackoffWithClock(defaultDuration, maxDuration time.Duration, clock clock) *PodBackoff {
 	return &PodBackoff{
-		perPodBackoff:   map[ktypes.NamespacedName]*backoffEntry{},
+		expiryQ:         NewHeap(backoffEntryKeyFunc, backoffEntryCompareUpdate),
+		backoffQ:        NewHeap(backoffEntryKeyFunc, backoffEntryCompareBackoff),
 		clock:           clock,
 		defaultDuration: defaultDuration,
 		maxDuration:     maxDuration,
 	}
 }
 
-func (p *PodBackoff) GetEntry(podID ktypes.NamespacedName) *backoffEntry {
+func (p *PodBackoff) getEntry(podID ktypes.NamespacedName) *backoffEntry {
+	entry, exists, _ := p.expiryQ.GetByKey(podID.String())
+	var be *backoffEntry
+	if !exists {
+		be = &backoffEntry{
+			initialized: false,
+			podName:     podID,
+			backoff:     p.defaultDuration,
+		}
+		p.expiryQ.Update(be)
+	} else {
+		be = entry.(*backoffEntry)
+	}
+	return be
+}
+
+func (p *PodBackoff) doBackoff(be *backoffEntry) time.Duration {
+	duration := be.doBackoff(p.maxDuration)
+	p.backoffQ.Update(be)
+	return duration
+}
+
+func (p *PodBackoff) BackoffPod(podID ktypes.NamespacedName) time.Duration {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-	entry, ok := p.perPodBackoff[podID]
-	if !ok {
-		entry = &backoffEntry{backoff: p.defaultDuration}
-		p.perPodBackoff[podID] = entry
-	}
+	entry := p.getEntry(podID)
 	entry.lastUpdate = p.clock.Now()
-	return entry
+	return p.doBackoff(entry)
+}
+
+// TryBackoffAndWait tries to acquire the backoff lock, maxDuration is the maximum allowed period to wait for.
+func (p *PodBackoff) TryBackoffAndWait(podID ktypes.NamespacedName) bool {
+	p.lock.Lock()
+	entry := p.getEntry(podID)
+
+	if !entry.tryLock() {
+		p.lock.Unlock()
+		return false
+	}
+	defer entry.unlock()
+	duration := p.doBackoff(entry)
+	p.lock.Unlock()
+	time.Sleep(duration)
+	return true
 }
 
 func (p *PodBackoff) Gc() {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	now := p.clock.Now()
-	for podID, entry := range p.perPodBackoff {
-		if now.Sub(entry.lastUpdate) > p.maxDuration {
-			delete(p.perPodBackoff, podID)
+	var be *backoffEntry
+	for {
+		entry := p.expiryQ.Peek()
+		if entry == nil {
+			break
+		}
+		be = entry.(*backoffEntry)
+		if now.Sub(be.lastUpdate) > p.maxDuration {
+			p.expiryQ.Pop()
+			p.backoffQ.Delete(entry)
+		} else {
+			break
 		}
 	}
+}
+
+func backoffEntryKeyFunc(b interface{}) (string, error) {
+	be := b.(*backoffEntry)
+	return be.podName.String(), nil
+}
+
+// Returns true when b1's backoff time is before b2's
+func backoffEntryCompareUpdate(b1, b2 interface{}) bool {
+	be1 := b1.(*backoffEntry)
+	be2 := b2.(*backoffEntry)
+	return be1.lastUpdate.Before(be2.lastUpdate)
+}
+
+// Returns true when b1's backoff time is before b2's
+func backoffEntryCompareBackoff(b1, b2 interface{}) bool {
+	be1 := b1.(*backoffEntry)
+	be2 := b2.(*backoffEntry)
+	return be1.backoffTime().Before(be2.backoffTime())
 }

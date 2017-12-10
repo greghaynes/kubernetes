@@ -1175,8 +1175,7 @@ func (factory *configFactory) MakeDefaultErrorFunc(backoff *util.PodBackoff, pod
 			// to run on a node, scheduler takes the pod into account when running
 			// predicates for the node.
 			if !util.PodPriorityEnabled() {
-				entry := backoff.GetEntry(podID)
-				if !entry.TryWait(backoff.MaxDuration()) {
+				if !backoff.TryBackoffAndWait(podID) {
 					glog.Warningf("Request for pod %v already in flight, abandoning", podID)
 					return
 				}

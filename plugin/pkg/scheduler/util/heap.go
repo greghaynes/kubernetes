@@ -112,6 +112,13 @@ func (h *heapData) Pop() interface{} {
 	return item.obj
 }
 
+func (h *heapData) Peek() interface{} {
+	if len(h.queue) > 0 {
+		return h.items[h.queue[0]].obj
+	}
+	return nil
+}
+
 // Heap is a producer/consumer queue that implements a heap data structure.
 // It can be used to implement priority queues and similar data structures.
 type Heap struct {
@@ -183,6 +190,10 @@ func (h *Heap) Delete(obj interface{}) error {
 		return nil
 	}
 	return fmt.Errorf("object not found")
+}
+
+func (h *Heap) Peek() interface{} {
+	return h.data.Peek()
 }
 
 // Pop returns the head of the heap.
